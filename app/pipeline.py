@@ -28,6 +28,13 @@ RAW_FEATURE_COLUMNS = [
 ]
 
 
+def normalize_granularity(granularity: str) -> str:
+    cleaned = granularity.strip().lower()
+    if cleaned in {"h", "hour", "hours"}:
+        return "1h"
+    return cleaned
+
+
 def transactions_to_frame(rows) -> pd.DataFrame:
     data = [
         {
@@ -82,7 +89,7 @@ def build_hourly_windows(transactions: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
 
     frame = transactions.copy()
-    frame["window_start"] = frame["ts"].dt.floor("H")
+    frame["window_start"] = frame["ts"].dt.floor("h")
     frame["downtime_seconds_row"] = infer_downtime_seconds(frame)
     frame["is_down_event"] = frame["downtime_seconds_row"] > 0
     frame["is_fail"] = frame["completion_status"].fillna(1).astype(int) == 0
@@ -128,10 +135,11 @@ def build_forecast_feature_frame(history_windows: pd.DataFrame, predict_day: dat
     if history_windows.empty:
         raise ValueError("Training history is empty. Load raw transactions first.")
 
-    gran_minutes = int(pd.Timedelta(granularity).total_seconds() / 60)
+    pandas_granularity = normalize_granularity(granularity)
+    gran_minutes = int(pd.Timedelta(pandas_granularity).total_seconds() / 60)
     windows_per_day = int(24 * 60 / gran_minutes)
 
-    predict_starts = pd.date_range(pd.Timestamp(predict_day), periods=windows_per_day, freq=granularity)
+    predict_starts = pd.date_range(pd.Timestamp(predict_day), periods=windows_per_day, freq=pandas_granularity)
     pred_frame = pd.DataFrame({"window_start": predict_starts})
     pred_frame["hour_of_day"] = pred_frame["window_start"].dt.hour
     pred_frame["day_of_week"] = pred_frame["window_start"].dt.dayofweek
