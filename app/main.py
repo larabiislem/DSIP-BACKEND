@@ -12,6 +12,7 @@ from app.database import Base, engine, get_db
 from app.models import HourlyPrediction, HourlyWindow
 from app.pipeline import load_raw_transactions, run_prediction_pipeline
 from app.schemas import BulkTransactionsIn, HealthResponse, PipelineRunRequest, PipelineRunResponse
+from app.svfe_ingest import build_raw_transaction_rows, parse_raw_dat
 
 
 settings = get_settings()
@@ -50,6 +51,42 @@ async def ingest_transactions_csv(file: UploadFile = File(...), db: Session = De
     records = frame.to_dict(orient="records")
     count = load_raw_transactions(db, records)
     return {"inserted": count}
+
+
+@app.post("/transactions/upload-raw-dat")
+async def ingest_raw_dat(
+    file: UploadFile = File(...),
+    year: int = 2023,
+    target_date: str | None = None,
+    db: Session = Depends(get_db),
+) -> dict[str, int]:
+    """
+    Accepts a raw fixed-width SVFE posting file (.dat), runs parsing + gap
+    detection + confidence scoring (app.svfe_ingest), and inserts the
+    resulting RawTransaction-shaped rows -- so a brand-new export can go
+    straight from raw file to this API without a separate preprocessing
+    script.
+    """
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".dat") as tmp:
+        shutil.copyfileobj(file.file, tmp)
+        tmp_path = tmp.name
+
+    try:
+        transactions_df = parse_raw_dat(tmp_path, target_date=target_date)
+        if len(transactions_df) == 0:
+            raise HTTPException(status_code=400, detail="No valid body records found in the uploaded file.")
+        feature_rows = build_raw_transaction_rows(transactions_df, year=year)
+        records = feature_rows.to_dict(orient="records")
+        count = load_raw_transactions(db, records)
+        return {"inserted": count}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
 
 
 @app.post("/pipeline/run", response_model=PipelineRunResponse)
